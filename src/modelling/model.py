@@ -100,6 +100,9 @@ class Model:
         self.e_a = None
         self.e_d = None
 
+        # TESTING
+        self.y_vessel = None
+
     def create_variables(self):
         self.x = self.model.addVars(
             [(i, j, k) for (i, j), k in itertools.product(self.arcs, self.vessels)],
@@ -146,6 +149,16 @@ class Model:
             ],
             vtype=GRB.CONTINUOUS,
             name="e_d",
+        )
+
+        # TESTING
+        self.y_vessel = self.model.addVars(
+            [
+                (j, k)
+                for j, k in itertools.product(self.destinations.keys(), self.vessels)
+            ],
+            vtype=GRB.BINARY,
+            name="y_vessel",
         )
 
     def create_constraints(self):
@@ -200,14 +213,34 @@ class Model:
             ),
             name="station_assignment",
         )
-        # self.model.addConstrs(
-        #     (
-        #         self.e_d[j, k] <= self.charge_capacity * self.y[j]
-        #         for j in self.destinations.keys()
-        #         for k in self.vessels
-        #     )
-        # )
-        # vessel assignment
+        # station-vessel assignment
+        self.model.addConstrs(
+            (
+                gp.quicksum(self.x[i, j, k] for i in self.turbines.keys() if i != j)
+                <= self.y_vessel[j, k] * 100000
+                for j in self.destinations.keys()
+                for k in self.vessels
+            ),
+            name="station_vessel_assignment",
+        )
+        # link stations and staiton-vessel assignment
+        self.model.addConstrs(
+            (
+                self.y_vessel[j, k] <= self.y[j]
+                for j in self.destinations.keys()
+                for k in self.vessels
+            ),
+            name="link_station_vessel_assignment",
+        )
+        # only one vessel per station
+        self.model.addConstrs(
+            (
+                gp.quicksum(self.y_vessel[j, k] for j in self.destinations.keys()) == 1
+                for k in self.vessels
+            ),
+            name="one_vessel_per_station",
+        )
+
         self.model.addConstrs(
             (
                 gp.quicksum(
