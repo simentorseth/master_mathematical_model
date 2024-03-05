@@ -1,7 +1,11 @@
 import itertools
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
 from modelling.utils import compute_distance
+from termcolor import colored, cprint
 
 
 class Model:
@@ -79,8 +83,12 @@ class Model:
         }
         self.consumption_rate = parameters["consumption_rate"]
         self.charge_capacity = parameters["charge_capacity"]
-        self.time_window_parameters = {i: [0.0, 10.0] for i in self.time_windows}
+        # self.time_window_parameters = {i: [0.0, 10.0] for i in self.time_windows}
+        self.time_window_parameters = self.create_time_windows()
         self.max_cumulative_travel_time = parameters["max_cumulative_travel_time"]
+        self.time_window_max = max(
+            [value[1] for value in self.time_window_parameters.values()]
+        )
         self.big_M = 1000  # Big M
         # Variables
         self.x = None
@@ -181,17 +189,33 @@ class Model:
         # station assignment
         self.model.addConstrs(
             (
-                gp.quicksum(self.x[i, j, k] for i in self.turbines.keys() if i != j)
-                <= self.y[j] * len(self.arcs)
+                gp.quicksum(
+                    self.x[i, j, k]
+                    for i in self.turbines.keys()
+                    for k in self.vessels
+                    if i != j
+                )
+                <= self.y[j] * len(self.turbines)
                 for j in self.destinations.keys()
-                for k in self.vessels
             ),
             name="station_assignment",
         )
+        # self.model.addConstrs(
+        #     (
+        #         self.e_d[j, k] <= self.charge_capacity * self.y[j]
+        #         for j in self.destinations.keys()
+        #         for k in self.vessels
+        #     )
+        # )
         # vessel assignment
         self.model.addConstrs(
             (
-                gp.quicksum(self.x[i, j, k] for i, j in self.arcs if i != j)
+                gp.quicksum(
+                    self.x[i, j, k]
+                    for i in self.vertices_w_origin
+                    for j in self.vertices_w_destination
+                    if i != j
+                )
                 <= self.z[k] * len(self.arcs)
                 for k in self.vessels
             ),
@@ -221,7 +245,7 @@ class Model:
         self.model.addConstrs(
             (
                 gp.quicksum(
-                    self.b[k, p] * self.time_window_parameters[p][-1]  # upper bound
+                    self.b[k, p] * self.time_window_parameters[p][1]  # upper bound
                     for p in self.time_windows
                 )
                 >= self.t[i, k]
@@ -238,9 +262,10 @@ class Model:
                 self.t[j, k]
                 >= self.t[i, k]
                 + (self.demands[i] + self.travel_times[i, j]) * self.x[i, j, k]
-                - self.big_M * (1 - self.x[j, i, k])
+                - self.time_window_max * (1 - self.x[i, j, k])
                 for i, j in self.arcs
                 for k in self.vessels
+                if i != j
             ),
             name="arrival_time",
         )
@@ -304,49 +329,131 @@ class Model:
             GRB.MINIMIZE,
         )
 
-    # def subtour_elimination(self, model, where):
-    #     if where == GRB.Callback.MIPSOL:
-    #         # make a list of edges selected in the solution
-    #         xs = model.cbGetSolution(self.model._x)
-    #         selected = gp.tuplelist((i, j, k) for i, j, k in model._x.keys() if xs[i, j, k] > 0.5)
-    #         # find the shortest cycle in the selected edge list
-    #         tour = self.subtour(selected)
-    #         if len(tour) < len(self.turbines.keys()) - 2:
-    #             # add subtour elimination constr. for every pair of cities in subtour
-    #             [(i, j, k) for (i, j), k in itertools.product(self.arcs, self.vessels)]
-    #             model.cbLazy(gp.quicksum(model._x[i, j, k] for (i, j), k in itertools.product(tour, self.vessels)) <= len(tour)-1)
-
-    # def subtour(self, edges):
-    #     unvisited = self.turbines.keys()[:]
-    #     cycle = self.turbines.keys()[:] # Dummy - guaranteed to be replaced
-    #     while unvisited:  # true if list is non-empty
-    #         thiscycle = []
-    #         neighbors = unvisited
-    #         while neighbors:
-    #             current = neighbors[0]
-    #             thiscycle.append(current)
-    #             unvisited.remove(current)
-    #             neighbors = [j for i, j in edges.select(current, '*')
-    #                         if j in unvisited]
-    #         if len(thiscycle) <= len(cycle):
-    #             cycle = thiscycle # New shortest subtour
-    #     return cycle
+    def create_time_windows(self, window_length=8):
+        result = []
+        for i in range(self.num_time_windows):
+            if i == 0:
+                start = 0
+            else:
+                start = result[-1][1] + 1
+            end = start + window_length
+            result.append([start, end])
+        return {i: v for i, v in enumerate(result)}
 
     def solve(self):
         # self.model.Params.LazyConstraints = 1
         self.model.optimize()
 
     def print_solution(self):
-        for vessel, time_window in self.b.keys():
-            if self.b[vessel, time_window].x > 0.5:
-                print(f"Vessel {vessel} used time window {time_window}")
-                for origin, destination in self.arcs:
-                    if self.x[origin, destination, vessel].x > 0.5:
-                        arrival_origin = self.t[origin, vessel].x
-                        arrival_destination = self.t[destination, vessel].x
-                        print(
-                            f"Vessel {vessel} traveled from {origin} at time {arrival_origin} and arrived at {destination} at time {arrival_destination}"
-                        )
+        for i, j, k in self.x.keys():
+            if self.x[i, j, k].x > 0.5:
+                print(
+                    colored(
+                        f"x[{i}, {j}, {k}] = {self.x[i, j, k].x}",
+                        "light_green",
+                        attrs=["bold"],
+                    )
+                )
+            else:
+                cprint(f"x[{i}, {j}, {k}] = {self.x[i, j, k].x}", "red", attrs=["bold"])
+        print("\n")
+        # y[j]
+        for j in self.y.keys():
+            if self.y[j].x > 0.5:
+                print(colored(f"y[{j}] = {self.y[j].x}", "light_green", attrs=["bold"]))
+            else:
+                cprint(f"y[{j}] = {self.y[j].x}", "red", attrs=["bold"])
+        print("\n")
+        # z[k]
+        for k in self.z.keys():
+            if self.z[k].x > 0.5:
+                print(colored(f"z[{k}] = {self.z[k].x}", "light_green", attrs=["bold"]))
+            else:
+                cprint(f"z[{k}] = {self.z[k].x}", "red", attrs=["bold"])
+        print("\n")
+        # b[k, p]
+        for k, p in self.b.keys():
+            if self.b[k, p].x > 0.5:
+                print(
+                    colored(
+                        f"b[{k}, {p}] = {self.b[k, p].x}", "light_green", attrs=["bold"]
+                    )
+                )
+            else:
+                cprint(f"b[{k}, {p}] = {self.b[k, p].x}", "red", attrs=["bold"])
+        print("\n")
+        # t[i, k]
+        for i, k in self.t.keys():
+            if self.z[k].x > 0.5:
+                print(
+                    colored(
+                        f"t[{i}, {k}] = {self.t[i, k].x}",
+                        "light_green",
+                        attrs=["bold"],
+                    )
+                )
+        # for i, k in self.t.keys():
+        #     if self.t[i, k].x > 0.0:
+        #         print(
+        #             colored(
+        #                 f"t[{i}, {k}] = {self.t[i, k].x}",
+        #                 "light_green",
+        #                 attrs=["bold"],
+        #             )
+        #         )
+        #     else:
+        #         cprint(f"t[{i}, {k}] = {self.t[i, k].x}", "red", attrs=["bold"])
+        print("\n")
+        # e_a[i, k]
+        for i, k in self.e_a.keys():
+            print(f"e_a[{i}, {k}] = {self.e_a[i, k].x}")
+        print("\n")
+        # e_d[i, k]
+        for i, k in self.e_d.keys():
+            print(f"e_d[{i}, {k}] = {self.e_d[i, k].x}")
+
+        for i, window in self.time_window_parameters.items():
+            print(f"T_{i}: {window}")
+
+    def visualise_solution(self):
+        G = nx.DiGraph()
+        G.add_edges_from((i, j) for i, j, k in self.x.keys() if self.x[i, j, k].x > 0.5)
+        # nodes
+        options = {"edgecolors": "black", "node_size": 300}
+        nx.draw_networkx_nodes(
+            G,
+            self.turbines,
+            nodelist=self.turbines.keys(),
+            node_color="tab:blue",
+            label="turbines",
+            **options,
+        )
+        nx.draw_networkx_nodes(
+            G,
+            self.destinations,
+            nodelist=[
+                j
+                for j in self.y.keys()
+                if self.y[j].x > 0.5 and j in self.destinations.keys()
+            ],
+            node_color="tab:green",
+            label="built substation",
+            **options,
+        )
+        nx.draw_networkx_nodes(
+            G,
+            self.destinations,
+            nodelist=[j for j in self.y.keys() if self.y[j].x < 0.5],
+            node_color="tab:gray",
+            label="unbuilt substation",
+            **options,
+        )
+        # edges
+        nx.draw_networkx_edges(G, self.nodes, edgelist=G.edges(), edge_color="tab:gray")
+        # labels
+        nx.draw_networkx_labels(G, self.nodes, font_size=12, font_color="white")
+        # plt.legend()
+        plt.show()
 
     def run(self):
         self.create_variables()
@@ -362,9 +469,11 @@ class Model:
         assert self.e_d is not None
 
         self.solve()
-        self.print_solution()
-        # Free resources safely
-        if self.model.Status == 3:
+        if self.model.Status != 3:  # infeasible
+            self.print_solution()
+            self.visualise_solution()
+        else:
             print("Model is proven infeasible by Gurobi")
+        # Free resources safely
         self.model.dispose()
         gp.disposeDefaultEnv()
