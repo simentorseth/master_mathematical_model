@@ -216,7 +216,7 @@ class Model:
                     for j in self.vertices_w_destination
                     if i != j
                 )
-                <= self.z[k] * len(self.arcs)
+                <= self.z[k] * (len(self.turbines) + 1)
                 for k in self.vessels
             ),
             name="vessel assignment",
@@ -284,10 +284,12 @@ class Model:
             (
                 self.e_a[j, k]
                 <= self.e_d[i, k]
-                - self.x[i, j, k] * self.distances[i, j] * self.consumption_rate
-                + self.big_M * (1 - self.x[i, j, k])
-                for i, j in self.arcs
+                - (self.x[i, j, k] * self.distances[i, j] * self.consumption_rate)
+                + self.charge_capacity * (1 - self.x[i, j, k])
+                for i in self.vertices_w_origin
+                for j in self.vertices_w_destination
                 for k in self.vessels
+                if i != j
             ),
             name="remaining_charge_arrival",
         )
@@ -319,6 +321,15 @@ class Model:
             name="full_charge_at_station",
         )
 
+        self.model.addConstrs(
+            (
+                self.e_d[j, k] >= 0
+                for j in self.vertices_w_origin_and_destination
+                for k in self.vessels
+            ),
+            name="full_charge_at_station",
+        )
+
     def create_objective(self):
         self.model.setObjective(
             gp.quicksum(
@@ -345,18 +356,32 @@ class Model:
         self.model.optimize()
 
     def print_solution(self):
-        for i, j, k in self.x.keys():
-            if self.x[i, j, k].x > 0.5:
-                print(
-                    colored(
-                        f"x[{i}, {j}, {k}] = {self.x[i, j, k].x}",
-                        "light_green",
-                        attrs=["bold"],
+        for k in self.vessels:
+            for i, j in self.arcs:
+                if self.x[i, j, k].x > 0.5:
+                    print(
+                        colored(
+                            f"x[{i}, {j}, {k}] = {self.x[i, j, k].x}",
+                            "light_green",
+                            attrs=["bold"],
+                        )
                     )
-                )
-            else:
-                cprint(f"x[{i}, {j}, {k}] = {self.x[i, j, k].x}", "red", attrs=["bold"])
-        print("\n")
+                # else:
+                #     cprint(
+                #         f"x[{i}, {j}, {k}] = {self.x[i, j, k].x}", "red", attrs=["bold"]
+                #     )
+        # for i, j, k in self.x.keys():
+        #     if self.x[i, j, k].x > 0.5:
+        #         print(
+        #             colored(
+        #                 f"x[{i}, {j}, {k}] = {self.x[i, j, k].x}",
+        #                 "light_green",
+        #                 attrs=["bold"],
+        #             )
+        #         )
+        #     else:
+        #         cprint(f"x[{i}, {j}, {k}] = {self.x[i, j, k].x}", "red", attrs=["bold"])
+        # print("\n")
         # y[j]
         for j in self.y.keys():
             if self.y[j].x > 0.5:
@@ -383,15 +408,19 @@ class Model:
                 cprint(f"b[{k}, {p}] = {self.b[k, p].x}", "red", attrs=["bold"])
         print("\n")
         # t[i, k]
-        for i, k in self.t.keys():
+        for k in self.vessels:
             if self.z[k].x > 0.5:
-                print(
-                    colored(
-                        f"t[{i}, {k}] = {self.t[i, k].x}",
-                        "light_green",
-                        attrs=["bold"],
+                for i in self.vertices_w_origin_and_destination:
+                    print(
+                        colored(
+                            f"t[{i}, {k}] = {self.t[i, k].x}",
+                            "light_green",
+                            attrs=["bold"],
+                        )
                     )
-                )
+            else:
+                print("\n")
+        print("\n")
         # for i, k in self.t.keys():
         #     if self.t[i, k].x > 0.0:
         #         print(
